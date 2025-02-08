@@ -1,26 +1,9 @@
 # README
 
-A Perl script to interact with the Groq API using a chain-of-thought reasoning
-strategy.
-
-## Usage
-
-```bash
-groq [options]
-```
-
-### Options
-
-- `--help` | `-h`: Display this help message
-- `--query` | `-q`: Prompt to send to the API (required)
-- `--model` | `-m`: Model to use (default: deepseek-r1-distill-llama-70b)
-- `--rounds` | `-r`: Number of rounds of thinking (default: 3)
-- `--list-models`: List available models
-
-## Description
-
-This script sends prompts to the Groq API and receives responses. It supports
-multiple rounds of thinking and can format the output using glow if installed.
+A perl script to interact with the Groq API using a chain-of-thought reasoning
+strategy. This script sends prompts to the Groq API and receives responses. It
+supports multiple rounds of thinking and can format the output using `glow` if
+installed.
 
 ## Installation
 
