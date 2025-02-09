@@ -35,6 +35,7 @@ my $help;
 my $query;
 my $model;
 my $rounds;
+my @files;
 my $list_models;
 
 GetOptions(
@@ -42,14 +43,25 @@ GetOptions(
   'q|query=s'   => \$query,
   'm|model=s'   => \$model,
   'r|rounds=i'  => \$rounds,
+  'f|file=s'    => \@files,
   'list-models' => \$list_models,
 ) or pod2usage(2);
 
 pod2usage(1) if $help;
 
 #-------------------------------------------------------------------------------
-# Miscellaneous initialization and configuration
+# Validation, initialization, and configuration
 #-------------------------------------------------------------------------------
+if (!$list_models && -t && !$query) {
+  pod2usage("--query is required", -exitval => 2);
+}
+
+for my $file (@files) {
+  unless (-e $file) {
+    die "File not found: $file\n";
+  }
+}
+
 my $USE_GLOW = -t STDOUT
   && system('which glow > /dev/null 2>&1') == 0;
 
@@ -58,7 +70,7 @@ binmode STDOUT, ':encoding(UTF-8)';
 #-------------------------------------------------------------------------------
 # GROQ API and model configuration
 #-------------------------------------------------------------------------------
-my $DEFAULT_MODEL = "llama-3.3-70b-specdec";
+my $DEFAULT_MODEL = "deepseek-r1-distill-llama-70b";
 my $MODEL         = $model  || $DEFAULT_MODEL;
 my $ROUNDS        = $rounds || 3;
 my $QUERY         = $query;
@@ -165,6 +177,7 @@ sub consider {
 
   my $msgs = [
     sys_msg($THINK_PROMPT),
+    file_msgs(),
     usr_msg($query),
   ];
 
@@ -182,6 +195,27 @@ sub consider {
   push @$msgs, usr_msg($FINALIZE_PROMPT);
   my $answer = get_completion($msgs);
   print_msg($answer);
+}
+
+sub file_msgs {
+  my @msgs;
+
+  for my $file (@files) {
+    my $contents = do {
+      local $/;
+      open my $fh, '<', $file or die "Can't open $file: $!";
+      <$fh>;
+    };
+
+    push @msgs, usr_msg(qq{
+      # File: $file
+      ```
+      $contents
+      ```
+    });
+  }
+
+  @msgs;
 }
 
 #-------------------------------------------------------------------------------
@@ -269,6 +303,7 @@ groq - A script to interact with the Groq API
    --query       | -q  Prompt to send to the API (required)
    --model       | -m  Model to use (default: llama-3.3-70b-specdec)
    --rounds      | -r  Number of rounds of thinking (default: 3)
+   --file        | -f  Include a file's contents in your query; can be used multiple times
    --list-models       List available models
 
 =head1 DESCRIPTION
