@@ -1,5 +1,18 @@
 #!/usr/bin/env perl
 
+#-------------------------------------------------------------------------------
+# This script provides command-line access to the Groq API for chat
+# completions. It can accept input as a parameter or from standard input,
+# allowing it to be used in a pipeline.
+#
+# It uses only modules from the standard library, so it requires no external
+# dependencies. It should function on any system with a complete Perl v5.14
+# installation.
+#
+# It optionally uses glow to format its output in an interactive terminal. If
+# glow is not installed, will output markdown-formatted text.
+#-------------------------------------------------------------------------------
+
 use strict;
 use warnings;
 use v5.14;
@@ -9,6 +22,11 @@ use HTTP::Tiny      qw();
 use JSON::PP        qw(decode_json encode_json);
 use Pod::Usage      qw(pod2usage);
 use Term::ANSIColor qw(:constants);
+
+#-------------------------------------------------------------------------------
+# Constants
+#-------------------------------------------------------------------------------
+use constant THOUGHT_MAX_COMPLETION_TOKENS => 2_000;
 
 #-------------------------------------------------------------------------------
 # Command-line options
@@ -40,23 +58,35 @@ binmode STDOUT, ':encoding(UTF-8)';
 #-------------------------------------------------------------------------------
 # GROQ API and model configuration
 #-------------------------------------------------------------------------------
-my $DEFAULT_MODEL = "llama-3.3-70b-specdec"; # 'deepseek-r1-distill-llama-70b-specdec';
+my $DEFAULT_MODEL = "llama-3.3-70b-specdec";
 my $MODEL         = $model  || $DEFAULT_MODEL;
 my $ROUNDS        = $rounds || 3;
 my $QUERY         = $query;
-my $API_KEY       = $ENV{GROQ_API_KEY} // die "GROQ API KEY not set\n";
+my $API_KEY       = $ENV{GROQ_API_KEY} // die "GROQ_API_KEY not set\n";
 my $COMPLETIONS   = 'https://api.groq.com/openai/v1/chat/completions';
 my $MODELS        = 'https://api.groq.com/openai/v1/models';
 
-my $THINK_PROMPT = q{
+my $THINK_PROMPT = qq{
   You are an AI assistant that reasons through problems step by step.
+
+  Carefully examine the user's query.
+  Are there invalid assumptions or logical fallacies that indicate a need to politely correct the user's assumptions before proceeding?
+
   Before answering, you must think inside <think>...</think> tags.
   Do not finalize your response until explicitly instructed.
 };
 
+my $KEEP_THINKING_PROMPT = qq{
+  Reexamine the user's query and your previous thoughts.
+  Is your reasoning in line with the user's needs?
+  Are there any other factors to consider?
+  Continue thinking.
+};
+
 my $FINALIZE_PROMPT = q{
-  Do not think any further.
-  Finalize your response.
+  **Do not think any further.**
+  Finalize your response to the user.
+  This will be shown to the user; ensure it is well-structured and clearly articulated.
   Respond in beautifully formatted markdown.
 };
 
@@ -98,14 +128,15 @@ sub get_models {
 }
 
 sub get_completion {
-  my ($msgs) = @_;
+  my ($msgs, %args) = @_;
 
   my $payload = encode_json {
     model    => $MODEL,
     messages => $msgs,
+    %args,
   };
 
-  my $response = $HTTP->post($COMPLETIONS, { content => $payload });
+  my $response = $HTTP->post($COMPLETIONS, {content => $payload});
 
   die "$response->{status} $response->{reason}"
     unless $response->{success};
@@ -117,7 +148,10 @@ sub get_completion {
 sub think {
   my $msgs  = shift;
 
-  my $res = get_completion($msgs);
+  my $res = get_completion($msgs,
+    max_completion_tokens => THOUGHT_MAX_COMPLETION_TOKENS,
+  );
+
   $res =~ s/^\s*<think>//s;
   $res =~ s/<\/think>.*\z//s;
   $res =~ s/^\s+//;
@@ -139,7 +173,7 @@ sub consider {
     push @$msgs, ast_msg("<think>$thought</think>");
 
     if ($round != $ROUNDS) {
-      push @$msgs, usr_msg("Continue thinking.");
+      push @$msgs, usr_msg($KEEP_THINKING_PROMPT);
     }
 
     print_thought($thought);
