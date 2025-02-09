@@ -7,17 +7,16 @@ installed.
 
 ## Installation
 
-1. Make sure `perl` is installed on your system.
-2. Ensure that `perl` is at least at version `v5.14` (`perl -v`).
-3. Set your Groq API key as an environment variable:
+1. Make sure `perl` is installed on your system and is at least version `v5.14` (check with `perl -v`).
+2. Set your Groq API key as an environment variable:
    ```bash
    export GROQ_API_KEY='your_api_key_here'
    ```
-4. Make the script executable:
+3. Make the script executable:
    ```bash
    chmod +x groq
    ```
-5. Optionally install [glow](https://github.com/charmbrace/glow) for formatted output.
+4. Optionally install [glow](https://github.com/charmbrace/glow) for formatted output.
 
 ## Example Usage
 
