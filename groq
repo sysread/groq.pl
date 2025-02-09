@@ -8,6 +8,7 @@ use Getopt::Long    qw(GetOptions);
 use HTTP::Tiny      qw();
 use JSON::PP        qw(decode_json encode_json);
 use Pod::Usage      qw(pod2usage);
+use Term::ANSIColor qw(:constants);
 
 #-------------------------------------------------------------------------------
 # Command-line options
@@ -39,12 +40,13 @@ binmode STDOUT, ':encoding(UTF-8)';
 #-------------------------------------------------------------------------------
 # GROQ API and model configuration
 #-------------------------------------------------------------------------------
-my $QUERY       = $query;
-my $MODEL       = $model  || 'deepseek-r1-distill-llama-70b-specdec';
-my $ROUNDS      = $rounds || 3;
-my $API_KEY     = $ENV{GROQ_API_KEY} // die "GROQ API KEY not set\n";
-my $COMPLETIONS = 'https://api.groq.com/openai/v1/chat/completions';
-my $MODELS      = 'https://api.groq.com/openai/v1/models';
+my $DEFAULT_MODEL = "llama-3.3-70b-specdec"; # 'deepseek-r1-distill-llama-70b-specdec';
+my $MODEL         = $model  || $DEFAULT_MODEL;
+my $ROUNDS        = $rounds || 3;
+my $QUERY         = $query;
+my $API_KEY       = $ENV{GROQ_API_KEY} // die "GROQ API KEY not set\n";
+my $COMPLETIONS   = 'https://api.groq.com/openai/v1/chat/completions';
+my $MODELS        = 'https://api.groq.com/openai/v1/models';
 
 my $THINK_PROMPT = q{
   You are an AI assistant that reasons through problems step by step.
@@ -126,7 +128,6 @@ sub think {
 
 sub consider {
   my $query = shift;
-  print_user_msg($query);
 
   my $msgs = [
     sys_msg($THINK_PROMPT),
@@ -152,17 +153,10 @@ sub consider {
 #-------------------------------------------------------------------------------
 # Output Functions
 #-------------------------------------------------------------------------------
-sub print_user_msg {
-  my $msg = shift // return;
-  my $md  = "#### User:\n\n$msg\n";
-  print_msg($md);
-}
-
 sub print_thought {
   my $thought = shift;
-  $thought =~ s/\n/\n> /gm;
-  my $md = "#### _Thinking..._\n> $thought\n";
-  print_msg($md);
+  print BOLD ITALIC "Thinking...", RESET, "\n\n";
+  print FAINT $thought, RESET, "\n\n";
 }
 
 sub print_msg {
@@ -239,7 +233,7 @@ groq - A script to interact with the Groq API
  Options:
    --help        | -h  Display this help message
    --query       | -q  Prompt to send to the API (required)
-   --model       | -m  Model to use (default: deepseek-r1-distill-llama-70b)
+   --model       | -m  Model to use (default: llama-3.3-70b-specdec)
    --rounds      | -r  Number of rounds of thinking (default: 3)
    --list-models       List available models
 
