@@ -26,16 +26,19 @@ use Term::ANSIColor qw(:constants);
 #-------------------------------------------------------------------------------
 # Constants
 #-------------------------------------------------------------------------------
+use constant DEFAULT_ROUNDS     => 3;
+use constant DEFAULT_MODEL      => "llama-3.3-70b-versatile";
+use constant API_MODELS         => "https://api.groq.com/openai/v1/models";
+use constant API_COMPLETIONS    => "https://api.groq.com/openai/v1/chat/completions";
 use constant THOUGHT_MAX_TOKENS => 2_000;
-use constant DEFAULT_MODEL      => "deepseek-r1-distill-llama-70b";
 
 #-------------------------------------------------------------------------------
 # Command-line options
 #-------------------------------------------------------------------------------
 my $help;
 my $query;
-my $model;
-my $rounds;
+my $model = DEFAULT_MODEL;
+my $rounds = DEFAULT_ROUNDS;
 my @files;
 my $list_models;
 
@@ -48,65 +51,56 @@ GetOptions(
   'list-models' => \$list_models,
 ) or pod2usage(2);
 
-pod2usage(1) if $help;
+pod2usage(-exitval => 1, -verbose => 2) if $help;
 
 #-------------------------------------------------------------------------------
 # Validation, initialization, and configuration
 #-------------------------------------------------------------------------------
-$model //= DEFAULT_MODEL;
-
 pod2usage("--query is required", -exitval => 2)
   if !$query          # ...query is not set
   && !$list_models    # ...and we aren't using a different subcommand
   && -t;              # ...and we are connected to a terminal
 
-for my $file (@files) {
-  unless (-e $file) {
-    die "File not found: $file\n";
-  }
+for (@files) {
+  -e $_ || die "File not found: $_\n";
 }
+
+pod2usage("--rounds must be at least 1", -exitval => 2)
+  if $rounds < 1;
+
+my $API_KEY = $ENV{GROQ_API_KEY}
+  or pod2usage("GROQ_API_KEY must be set", -exitval => 2);
 
 # Prevents groq from formatting LLM output with glow when not connected to a
 # terminal or if glow is not installed.
-my $USE_GLOW = -t STDOUT && system('which glow > /dev/null 2>&1') == 0;
+my $USE_GLOW =
+  -t STDOUT
+  && system('which glow > /dev/null 2>&1') == 0;
 
 # Set UTF-8 encoding for STDOUT since LLMs like their emojis
 binmode STDOUT, ':encoding(UTF-8)';
+binmode STDERR, ':encoding(UTF-8)';
 
 #-------------------------------------------------------------------------------
 # GROQ API and model configuration
 #-------------------------------------------------------------------------------
-my $ROUNDS      = $rounds || 3;
-my $QUERY       = $query;
-my $API_KEY     = $ENV{GROQ_API_KEY} // die "GROQ_API_KEY not set\n";
-my $COMPLETIONS = 'https://api.groq.com/openai/v1/chat/completions';
-my $MODELS      = 'https://api.groq.com/openai/v1/models';
-
 my $THINK_PROMPT = qq{
   You are an AI assistant that reasons through problems step by step.
-
-  Carefully examine the user's query.
-  Are there invalid assumptions or logical fallacies?
-  Politely correct the user's assumptions.
-
   Before answering, you must think inside <think>...</think> tags.
   Do not finalize your response until explicitly instructed.
+  Begin by thinking about the user's query.
 };
 
 my $KEEP_THINKING_PROMPT = qq{
-  Reexamine the user's query and your previous thoughts.
-  Is your reasoning in line with the user's needs?
-  Are there any other factors to consider?
+  Refine your thoughts.
+  Double-check your reasoning against the user's query.
   Continue thinking.
 };
 
 my $FINALIZE_PROMPT = q{
   **Do not think any further.**
   Finalize your response to the user.
-  Organize your response to be well-structured and clearly articulated.
-  Use concise phrasing and avoid unnecessary repetition.
-  Never use smart quotes or other typographic frippery and furbelows.
-  Respond in formatted markdown.
+  Format your response using markdown.
 };
 
 #-------------------------------------------------------------------------------
@@ -121,109 +115,6 @@ my $HTTP = HTTP::Tiny->new(
   keep_alive      => 1,
   default_headers => $HEADERS,
 );
-
-#-------------------------------------------------------------------------------
-# Message types
-#-------------------------------------------------------------------------------
-sub sys_msg{ {role => 'system',    content => $_[0]} }
-sub ast_msg{ {role => 'assistant', content => $_[0]} }
-sub usr_msg{ {role => 'user',      content => $_[0]} }
-
-#-------------------------------------------------------------------------------
-# API Functions
-#-------------------------------------------------------------------------------
-sub get{ $HTTP->get(@_) }
-sub post{ $HTTP->post(@_) }
-
-sub get_models {
-  my $response = get($MODELS);
-
-  die "$response->{status} $response->{reason}"
-    unless $response->{success};
-
-  my $data = decode_json($response->{content});
-
-  sort map{ $_->{id} } @{$data->{data}};
-}
-
-sub get_completion {
-  my ($msgs, %args) = @_;
-
-  my $payload = encode_json{
-    model    => $model,
-    messages => $msgs,
-    %args,
-  };
-
-  my $response = post($COMPLETIONS, {content => $payload});
-
-  die "$response->{status} $response->{reason}"
-    unless $response->{success};
-
-  my $data = decode_json($response->{content});
-  return $data->{choices}[0]{message}{content};
-}
-
-sub think {
-  my $msgs  = shift;
-
-  my $res = get_completion($msgs,
-    max_completion_tokens => THOUGHT_MAX_TOKENS,
-  );
-
-  $res =~ s/^\s*<think>//s;
-  $res =~ s/<\/think>.*\z//s;
-  $res =~ s/^\s+//;
-  $res =~ s/\s+\z//;
-
-  return $res;
-}
-
-sub consider {
-  my $query = shift;
-
-  my $msgs = [
-    sys_msg($THINK_PROMPT),
-    file_msgs(),
-    usr_msg($query),
-  ];
-
-  for (my $round = 1; $round <= $ROUNDS; ++$round) {
-    my $thought = think($msgs);
-    push @$msgs, ast_msg("<think>$thought</think>");
-
-    if ($round != $ROUNDS) {
-      push @$msgs, usr_msg($KEEP_THINKING_PROMPT);
-    }
-
-    print_thought($thought);
-  }
-
-  push @$msgs, usr_msg($FINALIZE_PROMPT);
-  my $answer = get_completion($msgs);
-  print_msg($answer);
-}
-
-sub file_msgs {
-  my @msgs;
-
-  for my $file (@files) {
-    my $contents = do {
-      local $/;
-      open my $fh, '<', $file or die "Can't open $file: $!";
-      <$fh>;
-    };
-
-    push @msgs, usr_msg(qq{
-      # File: $file
-      ```
-      $contents
-      ```
-    });
-  }
-
-  @msgs;
-}
 
 #-------------------------------------------------------------------------------
 # Output Functions
@@ -249,11 +140,113 @@ sub glow {
 }
 
 #-------------------------------------------------------------------------------
+# Message types
+#-------------------------------------------------------------------------------
+sub sys_msg { {role => 'system',    content => $_[0]} }
+sub ast_msg { {role => 'assistant', content => $_[0]} }
+sub usr_msg { {role => 'user',      content => $_[0]} }
+
+#-------------------------------------------------------------------------------
+# API Functions
+#-------------------------------------------------------------------------------
+sub get  { $HTTP->get(@_) }
+sub post { $HTTP->post(@_) }
+
+sub get_models {
+  my $res = get API_MODELS;
+
+  die "$res->{status} $res->{reason}"
+    unless $res->{success};
+
+  my $data = decode_json $res->{content};
+
+  sort map{ $_->{id} } @{$data->{data}};
+}
+
+sub get_completion {
+  my ($msgs, %args) = @_;
+
+  my $payload = encode_json{
+    model    => $model,
+    messages => $msgs,
+    %args,
+  };
+
+  my $res = post API_COMPLETIONS, {content => $payload};
+
+  die "$res->{status} $res->{reason}"
+    unless $res->{success};
+
+  my $data = decode_json $res->{content};
+  return $data->{choices}[0]{message}{content};
+}
+
+sub think {
+  my $msgs  = shift;
+
+  my $res = get_completion $msgs,
+    max_completion_tokens => THOUGHT_MAX_TOKENS;
+
+  $res =~ s/^\s*<think>//s;
+  $res =~ s/<\/think>.*\z//s;
+  $res =~ s/^\s+//;
+  $res =~ s/\s+\z//;
+
+  return $res;
+}
+
+sub consider {
+  my $query = shift;
+
+  my $msgs = [
+    sys_msg($THINK_PROMPT),
+    file_msgs(),
+    usr_msg($query),
+  ];
+
+  for (my $round = 1; $round <= $rounds; ++$round) {
+    my $thought = think $msgs;
+    push @$msgs, ast_msg "<think>$thought</think>";
+
+    if ($round != $rounds) {
+      push @$msgs, sys_msg $KEEP_THINKING_PROMPT;
+    }
+
+    print_thought $thought;
+  }
+
+  push @$msgs, sys_msg $FINALIZE_PROMPT;
+  my $answer = get_completion $msgs;
+  print_msg $answer;
+}
+
+sub file_msgs {
+  my @msgs;
+
+  for my $file (@files) {
+    my $contents = do {
+      local $/;
+      open my $fh, '<', $file or die "Can't open $file: $!";
+      <$fh>;
+    };
+
+    push @msgs, usr_msg qq{
+      # File: $file
+      ```
+      $contents
+      ```
+    };
+  }
+
+  @msgs;
+}
+
+#-------------------------------------------------------------------------------
 # Commands
 #-------------------------------------------------------------------------------
 sub answer {
-  if ($QUERY) {
-    consider($QUERY);
+  if (defined $query) {
+    consider $query;
   }
 
   unless (-t STDIN) {
@@ -261,18 +254,18 @@ sub answer {
       chomp $query;
 
       if ($query) {
-        consider($query);
+        consider $query;
       }
     }
   }
 }
 
 sub list_models {
-  my @models = get_models();
+  my @models = get_models;
 
   if ($USE_GLOW) {
-    my $md = join("\n", map{ "  - $_" } @models);
-    glow($md);
+    my $md = join "\n", map{ "  - $_" } @models;
+    glow $md;
     return;
   }
 
@@ -283,48 +276,85 @@ sub list_models {
 #-------------------------------------------------------------------------------
 # Main
 #-------------------------------------------------------------------------------
-if ($list_models) {
-  list_models();
-} else {
-  answer();
-}
+$list_models
+  ? list_models
+  : answer;
 
 __END__
 
 =head1 NAME
 
-groq - A script to interact with the Groq API
+groq - retrieve chat completions from the Groq API
 
 =head1 SYNOPSIS
 
-  groq [options]
+ groq [options]
 
  Options:
    --help        | -h  Display this help message
    --query       | -q  Prompt to send to the API (required)
-   --model       | -m  Model to use (default: llama-3.3-70b-specdec)
+   --model       | -m  Model to use (default: llama-3.3-70b-versatile)
    --rounds      | -r  Number of rounds of thinking (default: 3)
    --file        | -f  Include a file's contents in your query; can be used multiple times
    --list-models       List available models
 
 =head1 DESCRIPTION
 
-This script interacts with the Groq API to send prompts and receive responses.
+This script uses the Groq API to generate chat completions.
+It uses chain-of-thought reasoning to improve the quality of its responses.
 
-=head1 OUTPUT FORMATTING
+=head1 REQUIREMENTS
 
-If L<glow|https://github.com/charmbracelet/glow> is installed, it will be used
-for format the output. Otherwise, the output will be markdown-formatted text.
+This script requires Perl v5.14 or later.
+You must set C<GROQ_API_KEY> to your L<Groq API key|https://console.groq.com/keys> in your shell.
+
+=head1 OPTIONS
+
+=over
+
+=item B<--help>, B<-h>
+
+Display this help message.
+
+=item B<--query>, B<-q>
+
+The prompt to send to the API.
+
+=item B<--model>, B<-m>
+
+The model to use.
+Defaults to C<llama-3.3-70b-specdec>.
+Use C<--list-models> to see available models.
+
+=item B<--rounds>, B<-r>
+
+The number of rounds of reasoning to perform.
+Defaults to 3.
+
+Each round requires an additional API call.
+"Reasoning" responses are limited to 2,000 tokens.
+In general, 3-5 rounds of reasoning is sufficient for most cases.
+
+=item B<--file>, B<-f>
+
+Include a file's contents in your query.
+Can be used multiple times.
+
+=item B<--list-models>
+
+List available models.
+Ignores all other options (except C<--help>).
+
+=back
+
+=head1 OUTPUT
+
+If L<glow|https://github.com/charmbracelet/glow> is installed, it will be used for format the output.
+Otherwise, the output will be markdown-formatted text.
 
 Well, I<probably> markdown-formatted text. The LLM may have other ideas.
 
-=head2 REASONING
-
-This script will perform C<rounds> rounds of reasoning before responding to the
-query. Reasoning steps are emitted to C<STDERR>, while the final response is
-printed to C<STDOUT>.
-
-=head1 REDIRECTED I/O
+=head2 REDIRECTED I/O
 
 Alternately, you can pipe a prompt into the script:
 
@@ -333,5 +363,22 @@ Alternately, you can pipe a prompt into the script:
 C<groq> will generate a response for each line of input:
 
   echo -e "What is the meaning of life?\nWhat is the airspeed velocity of an unladen swallow?" | groq
+
+=head2 REASONING
+
+This script will perform C<rounds> rounds of reasoning before responding to the query.
+Reasoning steps are emitted to C<STDERR>, while the final response is printed to C<STDOUT>.
+
+=head1 AUTHOR
+
+Jeff Ober
+
+=head1 COPYRIGHT
+
+Copyright (C) 2025 Jeff Ober
+
+=head1 LICENSE
+
+This program is free software: you can redistribute it and/or modify it it under the terms of the L<MIT License|https://github.com/sysread/groq.pl/LICENSE>.
 
 =cut
