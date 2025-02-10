@@ -314,6 +314,12 @@ for format the output. Otherwise, the output will be markdown-formatted text.
 
 Well, I<probably> markdown-formatted text. The LLM may have other ideas.
 
+=head2 REASONING
+
+This script will perform C<rounds> rounds of reasoning before responding to the
+query. Reasoning steps are emitted to C<STDERR>, while the final response is
+printed to C<STDOUT>.
+
 =head1 REDIRECTED I/O
 
 Alternately, you can pipe a prompt into the script:
