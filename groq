@@ -26,7 +26,8 @@ use Term::ANSIColor qw(:constants);
 #-------------------------------------------------------------------------------
 # Constants
 #-------------------------------------------------------------------------------
-use constant THOUGHT_MAX_COMPLETION_TOKENS => 2_000;
+use constant THOUGHT_MAX_TOKENS => 2_000;
+use constant DEFAULT_MODEL      => "deepseek-r1-distill-llama-70b";
 
 #-------------------------------------------------------------------------------
 # Command-line options
@@ -56,6 +57,8 @@ if (!$list_models && -t && !$query) {
   pod2usage("--query is required", -exitval => 2);
 }
 
+$model //= DEFAULT_MODEL;
+
 for my $file (@files) {
   unless (-e $file) {
     die "File not found: $file\n";
@@ -70,13 +73,11 @@ binmode STDOUT, ':encoding(UTF-8)';
 #-------------------------------------------------------------------------------
 # GROQ API and model configuration
 #-------------------------------------------------------------------------------
-my $DEFAULT_MODEL = "deepseek-r1-distill-llama-70b";
-my $MODEL         = $model  || $DEFAULT_MODEL;
-my $ROUNDS        = $rounds || 3;
-my $QUERY         = $query;
-my $API_KEY       = $ENV{GROQ_API_KEY} // die "GROQ_API_KEY not set\n";
-my $COMPLETIONS   = 'https://api.groq.com/openai/v1/chat/completions';
-my $MODELS        = 'https://api.groq.com/openai/v1/models';
+my $ROUNDS      = $rounds || 3;
+my $QUERY       = $query;
+my $API_KEY     = $ENV{GROQ_API_KEY} // die "GROQ_API_KEY not set\n";
+my $COMPLETIONS = 'https://api.groq.com/openai/v1/chat/completions';
+my $MODELS      = 'https://api.groq.com/openai/v1/models';
 
 my $THINK_PROMPT = qq{
   You are an AI assistant that reasons through problems step by step.
@@ -128,30 +129,30 @@ sub usr_msg{ {role => 'user',      content => $_[0]} }
 #-------------------------------------------------------------------------------
 # API Functions
 #-------------------------------------------------------------------------------
+sub get{ $HTTP->get(@_) }
+sub post{ $HTTP->post(@_) }
+
 sub get_models {
-  my $response = $HTTP->get($MODELS);
+  my $response = get($MODELS);
 
   die "$response->{status} $response->{reason}"
     unless $response->{success};
 
   my $data = decode_json($response->{content});
 
-  return
-    sort { $a cmp $b }
-    map  { $_->{id} }
-         @{$data->{data}};
+  sort map{ $_->{id} } @{$data->{data}};
 }
 
 sub get_completion {
   my ($msgs, %args) = @_;
 
-  my $payload = encode_json {
-    model    => $MODEL,
+  my $payload = encode_json{
+    model    => $model,
     messages => $msgs,
     %args,
   };
 
-  my $response = $HTTP->post($COMPLETIONS, {content => $payload});
+  my $response = post($COMPLETIONS, {content => $payload});
 
   die "$response->{status} $response->{reason}"
     unless $response->{success};
@@ -164,7 +165,7 @@ sub think {
   my $msgs  = shift;
 
   my $res = get_completion($msgs,
-    max_completion_tokens => THOUGHT_MAX_COMPLETION_TOKENS,
+    max_completion_tokens => THOUGHT_MAX_TOKENS,
   );
 
   $res =~ s/^\s*<think>//s;
