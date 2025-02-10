@@ -53,11 +53,12 @@ pod2usage(1) if $help;
 #-------------------------------------------------------------------------------
 # Validation, initialization, and configuration
 #-------------------------------------------------------------------------------
-if (!$list_models && -t && !$query) {
-  pod2usage("--query is required", -exitval => 2);
-}
-
 $model //= DEFAULT_MODEL;
+
+pod2usage("--query is required", -exitval => 2)
+  if !$query          # ...query is not set
+  && !$list_models    # ...and we aren't using a different subcommand
+  && -t;              # ...and we are connected to a terminal
 
 for my $file (@files) {
   unless (-e $file) {
@@ -65,9 +66,11 @@ for my $file (@files) {
   }
 }
 
-my $USE_GLOW = -t STDOUT
-  && system('which glow > /dev/null 2>&1') == 0;
+# Prevents groq from formatting LLM output with glow when not connected to a
+# terminal or if glow is not installed.
+my $USE_GLOW = -t STDOUT && system('which glow > /dev/null 2>&1') == 0;
 
+# Set UTF-8 encoding for STDOUT since LLMs like their emojis
 binmode STDOUT, ':encoding(UTF-8)';
 
 #-------------------------------------------------------------------------------
