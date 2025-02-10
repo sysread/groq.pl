@@ -82,7 +82,8 @@ my $THINK_PROMPT = qq{
   You are an AI assistant that reasons through problems step by step.
 
   Carefully examine the user's query.
-  Are there invalid assumptions or logical fallacies that indicate a need to politely correct the user's assumptions before proceeding?
+  Are there invalid assumptions or logical fallacies?
+  Politely correct the user's assumptions.
 
   Before answering, you must think inside <think>...</think> tags.
   Do not finalize your response until explicitly instructed.
@@ -98,8 +99,10 @@ my $KEEP_THINKING_PROMPT = qq{
 my $FINALIZE_PROMPT = q{
   **Do not think any further.**
   Finalize your response to the user.
-  This will be shown to the user; ensure it is well-structured and clearly articulated.
-  Respond in beautifully formatted markdown.
+  Organize your response to be well-structured and clearly articulated.
+  Use concise phrasing and avoid unnecessary repetition.
+  Never use smart quotes or other typographic frippery and furbelows.
+  Respond in formatted markdown.
 };
 
 #-------------------------------------------------------------------------------
@@ -223,19 +226,13 @@ sub file_msgs {
 #-------------------------------------------------------------------------------
 sub print_thought {
   my $thought = shift;
-  print BOLD ITALIC "Thinking...", RESET, "\n\n";
-  print FAINT $thought, RESET, "\n\n";
+  print STDERR BOLD ITALIC "Thinking...", RESET, "\n\n";
+  print STDERR FAINT $thought, RESET, "\n\n";
 }
 
 sub print_msg {
   my $msg = shift // return;
-
-  if ($USE_GLOW) {
-    glow($msg);
-    return;
-  }
-
-  print "$msg";
+  $USE_GLOW ? glow($msg) : print("$msg");
 }
 
 sub glow {
