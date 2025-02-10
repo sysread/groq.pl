@@ -15,7 +15,7 @@ It supports multiple rounds of thinking and can format the output using `glow` i
 
 List available models:
 ```bash
-groq --list-models
+groq --models
 ```
 
 Send a query:

@@ -17,6 +17,8 @@ use strict;
 use warnings;
 use v5.14;
 
+use Digest::SHA     qw(sha256_hex);
+use File::Path      qw(make_path);
 use Getopt::Long    qw(GetOptions);
 use HTTP::Tiny      qw();
 use JSON::PP        qw(decode_json encode_json);
@@ -31,6 +33,7 @@ use constant DEFAULT_MODEL      => "llama-3.3-70b-versatile";
 use constant API_MODELS         => "https://api.groq.com/openai/v1/models";
 use constant API_COMPLETIONS    => "https://api.groq.com/openai/v1/chat/completions";
 use constant THOUGHT_MAX_TOKENS => 2_000;
+use constant SAVE_DIR           => "$ENV{HOME}/.groq/conversations";
 
 #-------------------------------------------------------------------------------
 # Command-line options
@@ -40,26 +43,38 @@ my $query;
 my $model = DEFAULT_MODEL;
 my $rounds = DEFAULT_ROUNDS;
 my @files;
+my $save;
+my $conversation;
 my $list_models;
+my $list_conversations;
 
 GetOptions(
-  'h|help'      => \$help,
-  'q|query=s'   => \$query,
-  'm|model=s'   => \$model,
-  'r|rounds=i'  => \$rounds,
-  'f|file=s'    => \@files,
-  'list-models' => \$list_models,
+  'h|help'        => \$help,
+  'q|query=s'     => \$query,
+  'm|model=s'     => \$model,
+  'r|rounds=i'    => \$rounds,
+  'f|file=s'      => \@files,
+  's|save'        => \$save,
+  'c|cont=s'      => \$conversation,
+  'models'        => \$list_models,
+  'conversations' => \$list_conversations,
 ) or pod2usage(2);
 
-pod2usage(-exitval => 1, -verbose => 2) if $help;
+pod2usage(-exitval => 1, -verbose => 2)
+  if $help;
 
 #-------------------------------------------------------------------------------
 # Validation, initialization, and configuration
 #-------------------------------------------------------------------------------
+my $command =
+    $list_models        ? 'list_models'
+  : $list_conversations ? 'list_conversations'
+                        : 'answer';
+
 pod2usage("--query is required", -exitval => 2)
-  if !$query          # ...query is not set
-  && !$list_models    # ...and we aren't using a different subcommand
-  && -t;              # ...and we are connected to a terminal
+  if !$query               # ...query is not set
+  && -t                    # ...and we are connected to a terminal
+  && $command eq 'answer'; # ...but only for the 'answer' command
 
 for (@files) {
   -e $_ || die "File not found: $_\n";
@@ -86,20 +101,20 @@ binmode STDERR, ':encoding(UTF-8)';
 #-------------------------------------------------------------------------------
 my $THINK_PROMPT = qq{
   You are an AI assistant that reasons through problems step by step.
-  Before answering, you must think inside <think>...</think> tags.
+  **Before answering, you must think inside <think>...</think> tags.**
   Do not finalize your response until explicitly instructed.
-  Begin by thinking about the user's query.
+  Start by considering the user's query.
+  Are there assumptions or falacies implicit in the query?
+  If so, identify them and gently correct the user.
 };
 
 my $KEEP_THINKING_PROMPT = qq{
-  Refine your thoughts.
-  Double-check your reasoning against the user's query.
   Continue thinking.
 };
 
 my $FINALIZE_PROMPT = q{
   **Do not think any further.**
-  Finalize your response to the user.
+  Finalize your response.
   Format your response using markdown.
 };
 
@@ -174,8 +189,11 @@ sub get_completion {
 
   my $res = post API_COMPLETIONS, {content => $payload};
 
-  die "$res->{status} $res->{reason}"
-    unless $res->{success};
+  unless ($res->{success}) {
+    warn "Error: $res->{status} $res->{reason}\n";
+    warn "Response: $res->{content}\n";
+    die "Failed to get completion\n";
+  }
 
   my $data = decode_json $res->{content};
   return $data->{choices}[0]{message}{content};
@@ -196,13 +214,11 @@ sub think {
 }
 
 sub consider {
-  my $query = shift;
+  my $msgs = shift // [];
 
-  my $msgs = [
-    sys_msg($THINK_PROMPT),
-    file_msgs(),
-    usr_msg($query),
-  ];
+  unshift @$msgs, sys_msg $THINK_PROMPT;
+  push @$msgs, file_msgs();
+  push @$msgs, usr_msg $query;
 
   for (my $round = 1; $round <= $rounds; ++$round) {
     my $thought = think $msgs;
@@ -218,6 +234,9 @@ sub consider {
   push @$msgs, sys_msg $FINALIZE_PROMPT;
   my $answer = get_completion $msgs;
   print_msg $answer;
+
+  push @$msgs, ast_msg $answer;
+  return $msgs;
 }
 
 sub file_msgs {
@@ -241,44 +260,91 @@ sub file_msgs {
   @msgs;
 }
 
+sub save {
+  my $msgs = shift;
+  my @msgs = grep{ $_->{role} =~ /user|assistant/ } @$msgs;
+  my $json = encode_json \@msgs;
+  my $id   = $conversation // substr sha256_hex($json), 0, 8;
+  my $file = SAVE_DIR . "/$id.json";
+
+  make_path SAVE_DIR;
+
+  open my $fh, '>', $file
+    or die "error saving conversation to $file: $!";
+
+  print $fh $json;
+  close $fh;
+
+  return $id;
+}
+
+sub load {
+  my $id   = shift;
+  my $path = SAVE_DIR . "/$id.json";
+
+  die "Conversation not found: $id\n"
+    unless -e $path;
+
+  my $json = do{
+    local $/;
+    open my $fh, '<', $path or die $!;
+    <$fh>
+  };
+
+  decode_json $json;
+}
+
 #-------------------------------------------------------------------------------
 # Commands
 #-------------------------------------------------------------------------------
+sub list_models {
+  print "$_\n" for get_models;
+}
+
+sub list_conversations {
+  my @convos = glob SAVE_DIR . '/*.json';
+  for (@convos) {
+    s/.*\///;
+    s/\.json//;
+    print "$_\n";
+  }
+}
+
 sub answer {
   if (defined $query) {
-    consider $query;
+    my $msgs = consider;
+
+    if ($save) {
+      my $id = save $msgs;
+      print "Saved conversation: $id\n";
+    }
   }
-
-  unless (-t STDIN) {
-    while (defined(my $query = <STDIN>)) {
+  elsif (! -t STDIN) {
+    while (defined($query = <STDIN>)) {
       chomp $query;
-
-      if ($query) {
-        consider $query;
-      }
+      last if $query eq '';
+      consider;
     }
   }
 }
 
-sub list_models {
-  my @models = get_models;
+sub continue_conversation {
+  my $msgs = load $conversation;
+  my $updated_msgs = consider $msgs;
 
-  if ($USE_GLOW) {
-    my $md = join "\n", map{ "  - $_" } @models;
-    glow $md;
-    return;
+  if ($save) {
+    my $id = save $updated_msgs;
+    print "Saved continued conversation: $id\n";
   }
-
-  print "$_\n"
-    for @models;
 }
 
 #-------------------------------------------------------------------------------
 # Main
 #-------------------------------------------------------------------------------
-$list_models
-  ? list_models
-  : answer;
+  $command eq 'list_models'         ? list_models
+: $command eq 'list_conversations'  ? list_conversations
+: $conversation                     ? continue_conversation
+                                    : answer;
 
 __END__
 
@@ -296,7 +362,10 @@ groq - retrieve chat completions from the Groq API
    --model       | -m  Model to use (default: llama-3.3-70b-versatile)
    --rounds      | -r  Number of rounds of thinking (default: 3)
    --file        | -f  Include a file's contents in your query; can be used multiple times
-   --list-models       List available models
+   --save        | -s  Save the conversation to a file
+   --cont        | -c  Continue a saved conversation
+   --conversations     List saved conversations
+   --models            List available models
 
 =head1 DESCRIPTION
 
@@ -316,15 +385,35 @@ You must set C<GROQ_API_KEY> to your L<Groq API key|https://console.groq.com/key
 
 Display this help message.
 
+=item B<--models>
+
+List available models.
+Ignores all other options (except C<--help>).
+
+=item B<--conversations>
+
+List saved conversations.
+Ignores all other options (except C<--help>).
+
 =item B<--query>, B<-q>
 
 The prompt to send to the API.
+
+=item B<--save>, B<-s>
+
+Save the conversation to continue it later.
+Conversations are saved to C<$HOME/.groq/conversations>.
+
+=item B<--cont>, B<-c>
+
+Continue a saved conversation.
+List saved conversations with C<--conversations>.
 
 =item B<--model>, B<-m>
 
 The model to use.
 Defaults to C<llama-3.3-70b-specdec>.
-Use C<--list-models> to see available models.
+Use C<--models> to see available models.
 
 =item B<--rounds>, B<-r>
 
@@ -339,11 +428,6 @@ In general, 3-5 rounds of reasoning is sufficient for most cases.
 
 Include a file's contents in your query.
 Can be used multiple times.
-
-=item B<--list-models>
-
-List available models.
-Ignores all other options (except C<--help>).
 
 =back
 
