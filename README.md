@@ -43,6 +43,23 @@ Include a file in the prompt:
 groq --query "Walk me through the behavior of this script." --file ./groq
 ```
 
+Save your conversation to a file:
+```bash
+groq --query "What is the meaning of life?" --save
+```
+
+List conversations:
+```bash
+groq --conversations
+```
+
+Continue a conversation:
+```bash
+groq -q "What is the airspeed velocity of an unladen swallow?"
+# Saved conversation: deadbeef
+groq -c deadbeef -q "Yes, sorry, I did mean African."
+```
+
 ## Dependencies
 
 - Perl v5.14 or higher
