@@ -86,6 +86,10 @@ pod2usage("--rounds must be at least 1", -exitval => 2)
 my $API_KEY = $ENV{GROQ_API_KEY}
   or pod2usage("GROQ_API_KEY must be set", -exitval => 2);
 
+if ($conversation && !$save) {
+  print STDERR BOLD RED "Warning - continuing a conversation (--cont) without saving (--save) it will discard the results.", RESET, "\n";
+}
+
 # Prevents groq from formatting LLM output with glow when not connected to a
 # terminal or if glow is not installed.
 my $USE_GLOW =
