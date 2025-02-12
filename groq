@@ -253,6 +253,7 @@ sub consider {
 
   push @$msgs, ast_msg $answer;
   print_msg $answer;
+  print '';
 
   return $msgs;
 }
@@ -304,6 +305,7 @@ sub save {
 
 sub confirm_save {
   my $msgs = shift;
+  return unless -t STDOUT;
 
   if ($conversation) {
     print STDERR "Update conversation $conversation? [y/N] ";
